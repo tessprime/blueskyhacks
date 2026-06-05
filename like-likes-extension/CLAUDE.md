@@ -6,7 +6,7 @@ A Chrome MV3 extension that injects a heart button next to each liker on a Blues
 
 | File | Role |
 |------|------|
-| `manifest.json` | MV3 manifest. No `permissions` except `"storage"`. All ATProto endpoints are in `host_permissions`. |
+| `manifest.json` | MV3 manifest. `"permissions": ["storage"]`. All ATProto endpoints are in `host_permissions`. |
 | `content.js` | Injected into `bsky.app/profile/*/post/*/liked-by`. Reads session from localStorage, injects buttons, handles toggle state. |
 | `content.css` | Styles for the `.ltl-btn` heart button. |
 | `background.js` | MV3 service worker (`"type": "module"`). Handles `LIKE_THE_LIKE` and `DELETE_LIKE` messages, writes to `chrome.storage.local`. |
@@ -23,24 +23,29 @@ The extension reads the user's active Bluesky session directly from `localStorag
 {
   "session": {
     "currentAccount": { "did": "did:plc:..." },
-    "accounts": [{ "did": "...", "accessJwt": "...", "refreshJwt": "...", "pdsUrl": "..." }]
+    "accounts": [{ "did": "...", "accessJwt": "...", "refreshJwt": "...", "pdsUrl": "https://bsky.social/" }]
   }
 }
 ```
 
 This key and schema come from `src/state/persisted/index.web.ts` in the Bluesky social-app source (`external_src/social-app`).
 
+**Important:** `account.pdsUrl` is the correct field for the PDS URL (not `account.service`). It is reliably populated but includes a trailing slash — strip it with `.replace(/\/$/, "")` before use.
+
 ### DOM Selector
 Each liker card is rendered by `ProfileCard.Link` as:
 ```html
-<a role="link" href="/profile/<handle>" aria-label="View ...'s profile">
+<a role="link" href="/profile/<handle>">
   <div>
     <div>  ← header row: avatar | name | follow button | [our button]
     ...
 ```
 
-Selector: `a[role="link"][href^="/profile/"][aria-label$="'s profile"]`  
-Handle is extracted from `href`. Button is appended to `:scope > div > div:first-child`.
+Selector: `a[role="link"][href^="/profile/"]:has(a[role="link"])`
+
+The `:has(a[role="link"])` clause distinguishes the outer card link from the inner avatar link (which is nested inside it). The `aria-label$="'s profile"` approach was abandoned because Bluesky may use Unicode apostrophes (U+2019).
+
+Handle is extracted from `href`. Button is appended to `:scope > div > div:first-child` (the flex-row header).
 
 The `data-testid="profileCard-<handle>-link"` attribute visible in the React source does **not** appear in the rendered web DOM.
 
@@ -50,7 +55,7 @@ The `data-testid="profileCard-<handle>-link"` attribute visible in the React sou
 3. `background.js` resolves handles to DIDs, calls `findLikeRecord` to walk the liker's PDS and find their like record pointing at the post
 4. Calls `createLike` to write `app.bsky.feed.like` in the user's PDS with that like record as subject
 5. Stores `storageKey → createdLikeUri` in `chrome.storage.local`
-6. Returns the created AT URI; button flips to ♥ and URI is shown on hover
+6. Returns the created AT URI; button flips to ♥ and URI is shown on hover; URI is logged to console
 
 ### Unlike Flow
 1. Button already has `data-like-uri` set from a previous like
@@ -80,7 +85,35 @@ On page load, `content.js` reads all storage, filters by suffix `:${authority}:$
 
 ## Known Limitations / Things to Verify
 
-- **DOM selector fragility**: The `aria-label$="'s profile"` selector and `:scope > div > div:first-child` header row path were derived from a single real DOM sample. If Bluesky updates their markup these may break.
-- `findLikeRecord` walks the liker's entire like history in pages of 100 — can be slow for prolific likers.
+- **DOM selector fragility**: The `:scope > div > div:first-child` header row path was derived from a real DOM sample. If Bluesky updates their markup it may break.
+- `findLikeRecord` walks the liker's entire like history in pages of 100 — can be slow for prolific likers. This is a candidate for replacement by deterministic rkeys (see Next Steps).
 - The `icons/` directory is empty; Chrome will warn on load until real PNGs are added.
 - `storedLikes` in `content.js` is read once at init and not updated when likes happen in the same session — the in-memory `button.dataset.likeUri` is the source of truth for toggle state after init.
+
+## Next Steps
+
+### 1. Use deterministic rkeys to replace the slow `findLikeRecord` crawl
+
+`com.atproto.repo.createRecord` accepts an optional `rkey`. If we set it to a deterministic encoding of the subject like's AT URI (e.g. base64url of `at://did/app.bsky.feed.like/rkey`), then:
+- Checking "have I liked this like?" becomes a direct `getRecord` call — O(1), no crawling
+- Deleting is equally direct
+- The current `findLikeRecord` page-walking approach can be removed entirely
+
+The rkey must match `[a-zA-Z0-9._~-]{1,512}`. Base64url encoding (uses `A-Z a-z 0-9 - _`) works cleanly and AT URIs encode to well under 512 chars.
+
+### 2. "X likes" count button + navigation to a likes-of-likes page
+
+**No backend needed.** `app.bsky.feed.getLikes` accepts any AT URI as its `uri` parameter — not just posts. The AppView indexes likes of like records exactly like likes of posts. Verified: calling it with a like record AT URI returns the correct likers list.
+
+Each liker row should show a secondary count: `♡ 3`. The extension fetches `app.bsky.feed.getLikes?uri=<likeRecordUri>` and displays `likes.length`. To get the liker's like record URI efficiently, use deterministic rkeys (step 1) — a single `getRecord` call instead of crawling.
+
+**Displaying the likes-of-likes list**
+
+Bluesky has no native URL for `liked-by` on an arbitrary record. Options:
+- Inject a panel/drawer into the existing page (same approach as the heart button)
+- Open a new tab with a custom `chrome-extension://` page the extension controls
+- Intercept a synthetic URL pattern (e.g. `https://bsky.app/likes-of-like/<encoded-uri>`) via a declarativeNetRequest rule
+
+**Recursive depth**
+
+A likes-of-likes page could itself show like counts per entry, enabling arbitrary recursion. Decide upfront whether to support this or cap at one level deep.

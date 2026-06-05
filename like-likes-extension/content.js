@@ -16,7 +16,7 @@ function readBskySession() {
       did: account.did,
       accessJwt: account.accessJwt,
       refreshJwt: account.refreshJwt,
-      pds: account.pdsUrl || "https://bsky.social",
+      pds: (account.pdsUrl || "https://bsky.social").replace(/\/$/, ""),
     };
   } catch {
     return null;
@@ -105,10 +105,14 @@ function makeLikeButton(handle, postAuthority, postRkey) {
 }
 
 function injectButtons(postAuthority, postRkey, storedLikes) {
+  // The outer card link is the only a[role="link"] that contains another
+  // a[role="link"] inside it (the avatar link). This avoids depending on
+  // aria-label text which may use Unicode apostrophes (U+2019).
   const cards = document.querySelectorAll(
-    'a[role="link"][href^="/profile/"][aria-label$="\'s profile"]:not([data-ltl-injected])'
+    'a[role="link"][href^="/profile/"]:has(a[role="link"]):not([data-ltl-injected])'
   );
 
+  console.log("[like-the-likes] found %d card(s)", cards.length);
   for (const card of cards) {
     card.dataset.ltlInjected = "1";
 
@@ -135,6 +139,7 @@ function injectButtons(postAuthority, postRkey, storedLikes) {
 
 async function init() {
   const { authority, rkey } = postInfoFromUrl();
+  console.log("[like-the-likes] init", { authority, rkey });
 
   // Load all stored likes once; filter to keys for this post.
   const allStorage = await chrome.storage.local.get(null);
