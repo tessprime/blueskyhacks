@@ -29,8 +29,8 @@ function postInfoFromUrl() {
   return { authority: parts[2], rkey: parts[4] };
 }
 
-function storageKey(handle, postAuthority, postRkey) {
-  return `ltl:${handle}:${postAuthority}:${postRkey}`;
+function storageKey(actorDid, likerHandle, postAuthority, postRkey) {
+  return `ltl:${actorDid}:${likerHandle}:${postAuthority}:${postRkey}`;
 }
 
 function likeTheLike(handle, postAuthority, postRkey, button) {
@@ -47,7 +47,7 @@ function likeTheLike(handle, postAuthority, postRkey, button) {
   // Toggle: if we already liked this, delete the record instead.
   if (button.dataset.likeUri) {
     const likeUri = button.dataset.likeUri;
-    const key = storageKey(handle, postAuthority, postRkey);
+    const key = storageKey(session.did, handle, postAuthority, postRkey);
     chrome.runtime.sendMessage(
       { type: "DELETE_LIKE", likeUri, storageKey: key, session },
       (response) => {
@@ -71,7 +71,7 @@ function likeTheLike(handle, postAuthority, postRkey, button) {
   }
 
   chrome.runtime.sendMessage(
-    { type: "LIKE_THE_LIKE", likerHandle: handle, postAuthority, postRkey, storageKey: storageKey(handle, postAuthority, postRkey), likeCreatedAt: button.dataset.likeCreatedAt || undefined, session },
+    { type: "LIKE_THE_LIKE", likerHandle: handle, postAuthority, postRkey, storageKey: storageKey(session.did, handle, postAuthority, postRkey), likeCreatedAt: button.dataset.likeCreatedAt || undefined, session },
     (response) => {
       if (chrome.runtime.lastError || !response?.ok) {
         const error = response?.error ?? chrome.runtime.lastError?.message ?? "Error";
@@ -138,7 +138,7 @@ function makeLikeButton(handle, postAuthority, postRkey) {
   return btn;
 }
 
-function injectButtons(postAuthority, postRkey, storedLikes, likeCreatedAts = {}) {
+function injectButtons(postAuthority, postRkey, storedLikes, likeCreatedAts = {}, actorDid = null) {
   // The outer card link is the only a[role="link"] that contains another
   // a[role="link"] inside it (the avatar link). This avoids depending on
   // aria-label text which may use Unicode apostrophes (U+2019).
@@ -162,8 +162,8 @@ function injectButtons(postAuthority, postRkey, storedLikes, likeCreatedAts = {}
     if (likeCreatedAt) btn.dataset.likeCreatedAt = likeCreatedAt;
 
     // Restore liked state if we've previously liked this person's like.
-    const key = storageKey(handle, postAuthority, postRkey);
-    if (storedLikes[key]) {
+    const key = actorDid ? storageKey(actorDid, handle, postAuthority, postRkey) : null;
+    if (key && storedLikes[key]) {
       btn.dataset.likeUri = storedLikes[key];
       btn.textContent = "♥";
       btn.title = storedLikes[key];
@@ -209,18 +209,21 @@ async function init() {
   if (!isLikedByPage()) return;
 
   const { authority, rkey } = postInfoFromUrl();
-  console.log("[like-the-likes] init", { authority, rkey });
+  const actorDid = readBskySession()?.did ?? null;
+  console.log("[like-the-likes] init", { authority, rkey, actorDid });
 
   const [allStorage, likeCreatedAts] = await Promise.all([
     chrome.storage.local.get(null),
     fetchLikeCreatedAts(authority, rkey),
   ]);
 
-  const storedLikes = Object.fromEntries(
-    Object.entries(allStorage).filter(([k]) => k.startsWith("ltl:") && k.endsWith(`:${authority}:${rkey}`))
-  );
+  const storedLikes = actorDid
+    ? Object.fromEntries(
+        Object.entries(allStorage).filter(([k]) => k.startsWith(`ltl:${actorDid}:`) && k.endsWith(`:${authority}:${rkey}`))
+      )
+    : {};
 
-  injectButtons(authority, rkey, storedLikes, likeCreatedAts);
+  injectButtons(authority, rkey, storedLikes, likeCreatedAts, actorDid);
 
   activeObserver = new MutationObserver(() => {
     if (!isLikedByPage()) {
@@ -228,7 +231,7 @@ async function init() {
       activeObserver = null;
       return;
     }
-    injectButtons(authority, rkey, storedLikes, likeCreatedAts);
+    injectButtons(authority, rkey, storedLikes, likeCreatedAts, actorDid);
   });
   activeObserver.observe(document.body, { childList: true, subtree: true });
 }
