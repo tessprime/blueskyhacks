@@ -15,7 +15,7 @@ async function refreshIfNeeded(session) {
   return session;
 }
 
-async function handleLikeTheLike({ likerHandle, postAuthority, postRkey, storageKey, session }) {
+async function handleLikeTheLike({ likerHandle, postAuthority, postRkey, storageKey, likeCreatedAt, session }) {
   session = await refreshIfNeeded(session);
 
   const resolvedPostDid = postAuthority.startsWith("did:")
@@ -27,7 +27,7 @@ async function handleLikeTheLike({ likerHandle, postAuthority, postRkey, storage
     ? likerHandle
     : await resolveHandle(likerHandle);
 
-  const likeRecord = await findLikeRecord(likerDid, postUri);
+  const likeRecord = await findLikeRecord(likerDid, postUri, likeCreatedAt);
   if (!likeRecord) {
     throw new Error(`No like record found for @${likerHandle} on this post`);
   }

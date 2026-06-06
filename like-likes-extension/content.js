@@ -71,7 +71,7 @@ function likeTheLike(handle, postAuthority, postRkey, button) {
   }
 
   chrome.runtime.sendMessage(
-    { type: "LIKE_THE_LIKE", likerHandle: handle, postAuthority, postRkey, storageKey: storageKey(handle, postAuthority, postRkey), session },
+    { type: "LIKE_THE_LIKE", likerHandle: handle, postAuthority, postRkey, storageKey: storageKey(handle, postAuthority, postRkey), likeCreatedAt: button.dataset.likeCreatedAt || undefined, session },
     (response) => {
       if (chrome.runtime.lastError || !response?.ok) {
         const error = response?.error ?? chrome.runtime.lastError?.message ?? "Error";
@@ -104,7 +104,7 @@ function makeLikeButton(handle, postAuthority, postRkey) {
   return btn;
 }
 
-function injectButtons(postAuthority, postRkey, storedLikes) {
+function injectButtons(postAuthority, postRkey, storedLikes, likeCreatedAts = {}) {
   // The outer card link is the only a[role="link"] that contains another
   // a[role="link"] inside it (the avatar link). This avoids depending on
   // aria-label text which may use Unicode apostrophes (U+2019).
@@ -124,6 +124,9 @@ function injectButtons(postAuthority, postRkey, storedLikes) {
 
     const btn = makeLikeButton(handle, postAuthority, postRkey);
 
+    const likeCreatedAt = likeCreatedAts[handle];
+    if (likeCreatedAt) btn.dataset.likeCreatedAt = likeCreatedAt;
+
     // Restore liked state if we've previously liked this person's like.
     const key = storageKey(handle, postAuthority, postRkey);
     if (storedLikes[key]) {
@@ -137,20 +140,63 @@ function injectButtons(postAuthority, postRkey, storedLikes) {
   }
 }
 
+// Fetch the first page of likes for the post and return a handle→createdAt map.
+// Used to compute TID cursors so findLikeRecord can jump straight to the right spot.
+async function fetchLikeCreatedAts(authority, rkey) {
+  try {
+    const uri = `at://${authority}/app.bsky.feed.post/${rkey}`;
+    const resp = await fetch(`https://public.api.bsky.app/xrpc/app.bsky.feed.getLikes?uri=${encodeURIComponent(uri)}&limit=100`);
+    if (!resp.ok) return {};
+    const data = await resp.json();
+    return Object.fromEntries(
+      (data.likes ?? []).map(l => [l.actor.handle, l.createdAt])
+    );
+  } catch {
+    return {};
+  }
+}
+
+function isLikedByPage() {
+  return /^\/profile\/[^/]+\/post\/[^/]+\/liked-by\/?$/.test(location.pathname);
+}
+
+let activeObserver = null;
+
 async function init() {
+  if (activeObserver) {
+    activeObserver.disconnect();
+    activeObserver = null;
+  }
+
+  if (!isLikedByPage()) return;
+
   const { authority, rkey } = postInfoFromUrl();
   console.log("[like-the-likes] init", { authority, rkey });
 
-  // Load all stored likes once; filter to keys for this post.
-  const allStorage = await chrome.storage.local.get(null);
+  const [allStorage, likeCreatedAts] = await Promise.all([
+    chrome.storage.local.get(null),
+    fetchLikeCreatedAts(authority, rkey),
+  ]);
+
   const storedLikes = Object.fromEntries(
     Object.entries(allStorage).filter(([k]) => k.startsWith("ltl:") && k.endsWith(`:${authority}:${rkey}`))
   );
 
-  injectButtons(authority, rkey, storedLikes);
+  injectButtons(authority, rkey, storedLikes, likeCreatedAts);
 
-  const observer = new MutationObserver(() => injectButtons(authority, rkey, storedLikes));
-  observer.observe(document.body, { childList: true, subtree: true });
+  activeObserver = new MutationObserver(() => {
+    if (!isLikedByPage()) {
+      activeObserver.disconnect();
+      activeObserver = null;
+      return;
+    }
+    injectButtons(authority, rkey, storedLikes, likeCreatedAts);
+  });
+  activeObserver.observe(document.body, { childList: true, subtree: true });
 }
+
+// navigation-bridge.js (MAIN world) dispatches 'ltl:navigate' on pushState/replaceState.
+window.addEventListener("ltl:navigate", init);
+window.addEventListener("popstate", init);
 
 init();

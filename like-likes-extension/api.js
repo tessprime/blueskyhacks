@@ -31,27 +31,49 @@ export async function getPds(did) {
   throw new Error(`No PDS found for ${did}`);
 }
 
+// ATProto TID: 64-bit value = (timestamp_us << 10) | clockid, encoded as
+// 13-char base32 using the s32 alphabet.
+const S32 = '234567abcdefghijklmnopqrstuvwxyz';
+
+function createdAtToTidCursor(createdAt, bufferMs = 5000) {
+  // Produce a TID just after the target timestamp so listRecords (newest-first)
+  // starts paging from right above the target record.
+  const ms = BigInt(Date.parse(createdAt) + bufferMs);
+  const tidInt = (ms * 1000n << 10n) | 1023n; // max clockid
+  let tid = '';
+  let n = tidInt;
+  for (let i = 0; i < 13; i++) {
+    tid = S32[Number(n & 31n)] + tid;
+    n >>= 5n;
+  }
+  return tid;
+}
+
 // Walk the liker's like records on their PDS to find the one pointing at postUri.
-export async function findLikeRecord(likerDid, postUri) {
+// likeCreatedAt (ISO string) is optional — if provided, a TID cursor is used to
+// jump straight to the right spot instead of crawling from the beginning.
+export async function findLikeRecord(likerDid, postUri, likeCreatedAt) {
   const pds = await getPds(likerDid);
-  let cursor = undefined;
-  do {
-    const params = new URLSearchParams({
-      repo: likerDid,
-      collection: "app.bsky.feed.like",
-      limit: "100",
-    });
-    if (cursor) params.set("cursor", cursor);
-    const resp = await fetch(`${pds}/xrpc/com.atproto.repo.listRecords?${params}`);
-    if (!resp.ok) throw new Error(`listRecords failed for ${likerDid}: ${resp.status}`);
-    const data = await resp.json();
-    for (const record of data.records ?? []) {
-      if (record.value?.subject?.uri === postUri) {
-        return { uri: record.uri, cid: record.cid };
-      }
+  const cursor = likeCreatedAt ? createdAtToTidCursor(likeCreatedAt) : undefined;
+
+  // With a good cursor, the record should be in the first page.
+  // Without one, we page through everything (slow for prolific likers).
+  const params = new URLSearchParams({
+    repo: likerDid,
+    collection: "app.bsky.feed.like",
+    limit: "100",
+  });
+  if (cursor) params.set("cursor", cursor);
+
+  const resp = await fetch(`${pds}/xrpc/com.atproto.repo.listRecords?${params}`);
+  if (!resp.ok) throw new Error(`listRecords failed for ${likerDid}: ${resp.status}`);
+  const data = await resp.json();
+
+  for (const record of data.records ?? []) {
+    if (record.value?.subject?.uri === postUri) {
+      return { uri: record.uri, cid: record.cid };
     }
-    cursor = data.cursor;
-  } while (cursor);
+  }
   return null;
 }
 

@@ -7,6 +7,7 @@
   "permissions": ["storage"],
   "host_permissions": [
     "https://bsky.app/*",
+    "https://public.api.bsky.app/*",
     "https://bsky.social/*",
     "https://plc.directory/*",
     "https://*.bsky.network/*"
@@ -17,7 +18,13 @@
   },
   "content_scripts": [
     {
-      "matches": ["https://bsky.app/profile/*/post/*/liked-by"],
+      "matches": ["https://bsky.app/*"],
+      "js": ["navigation-bridge.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": ["https://bsky.app/*"],
       "js": ["content.js"],
       "css": ["content.css"],
       "run_at": "document_idle"
