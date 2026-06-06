@@ -91,6 +91,40 @@ function likeTheLike(handle, postAuthority, postRkey, button) {
   );
 }
 
+function makeCountEl() {
+  const el = document.createElement("button");
+  el.className = "ltl-count";
+  el.textContent = "…";
+  el.disabled = true;
+  return el;
+}
+
+async function loadLikesCount(handle, postAuthority, postRkey, likeCreatedAt, countEl) {
+  const response = await new Promise(resolve =>
+    chrome.runtime.sendMessage(
+      { type: "GET_LIKE_URI", likerHandle: handle, postAuthority, postRkey, likeCreatedAt },
+      resolve
+    )
+  );
+  if (!response?.ok || !response.uri) {
+    countEl.textContent = "";
+    return;
+  }
+  try {
+    const resp = await fetch(
+      `https://public.api.bsky.app/xrpc/app.bsky.feed.getLikes?uri=${encodeURIComponent(response.uri)}&limit=100`
+    );
+    if (!resp.ok) { countEl.textContent = ""; return; }
+    const data = await resp.json();
+    const count = (data.likes ?? []).length;
+    countEl.textContent = `${count} ♡`;
+    countEl.title = `${count} like${count === 1 ? "" : "s"} of this like`;
+    countEl.dataset.likeUri = response.uri;
+  } catch {
+    countEl.textContent = "";
+  }
+}
+
 function makeLikeButton(handle, postAuthority, postRkey) {
   const btn = document.createElement("button");
   btn.className = "ltl-btn";
@@ -136,7 +170,11 @@ function injectButtons(postAuthority, postRkey, storedLikes, likeCreatedAts = {}
       btn.classList.add("ltl-liked");
     }
 
+    const countEl = makeCountEl();
     headerRow.appendChild(btn);
+    headerRow.appendChild(countEl);
+
+    loadLikesCount(handle, postAuthority, postRkey, likeCreatedAt, countEl);
   }
 }
 
